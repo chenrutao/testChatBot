@@ -179,3 +179,166 @@
  - 状态机定义: src/voice_dialog/core/state_machine.py
  - 主系统逻辑: src/voice_dialog/system.py
  - 声学VAD: src/voice_dialog/modules/acoustic_vad.py
+
+
+
+系统并发模型分析报告                                                                                                  
+  一、问题确认：是单线程阻塞模式                                                                                                                                                    t
+  结论：当前系统在模型推理期间无法监听前端音频输入
+
+  二、流程分析
+
+  2.1 WebSocket 主循环 (websocket_server.py:184-195)
+
+  while True:
+      data = await websocket.receive()  # ① 等待接收消息
+      # ...
+      await handle_audio(client_id, audio_chunk)  # ② 阻塞点！
+
+  2.2 调用链
+
+  WebSocket.receive()
+      ↓
+  handle_audio()
+      ↓ await
+  system.process_audio()
+      ↓ await (语音结束时)
+  _finalize_streaming()
+      ↓ await
+  _process_with_llm()
+      ↓ await (阻塞整个链路)
+  llm_planner.plan_stream()
+
+  2.3 问题根源
+
+  ┌────────────┬──────────┬───────────────────┐
+  │    阶段    │   状态   │  能否接收新音频   │
+  ├────────────┼──────────┼───────────────────┤
+  │ LISTENING  │ 等待语音 │ ✅ 可以           │
+  ├────────────┼──────────┼───────────────────┤
+  │ PROCESSING │ 处理 ASR │ ✅ 可以（短时间） │
+  ├────────────┼──────────┼───────────────────┤
+  │ THINKING   │ LLM 推理 │ ❌ 阻塞           │
+  ├────────────┼──────────┼───────────────────┤
+  │ SPEAKING   │ TTS 播报 │ ✅ 可以           │
+  └────────────┴──────────┴───────────────────┘
+
+  三、详细分析
+
+  3.1 为什么 THINKING 状态会阻塞？
+
+  # system.py:612
+  return await self._process_with_llm(...)  # 阻塞等待 LLM 完成
+
+  虽然使用了 async/await，但整个 _process_with_llm 是一个 顺序执行的 async 函数：
+
+  # system.py:695-698
+  llm_response = await self.llm_planner.plan_stream(...)  # 阻塞等待流式响应
+
+  3.2 事件循环的工作方式
+
+  时间线:
+  ─────────────────────────────────────────────────────────
+  T0: WebSocket 收到音频 → process_audio() 开始
+  T1: 语音结束 → _process_with_llm() 开始
+  T2: LLM 开始推理 → 事件循环等待
+      │
+      │  在此期间:
+      │  - WebSocket 缓冲区积累新音频（但主循环被阻塞）
+      │  - 无法调用 process_audio() 处理新音频
+      │  - 打断检测代码无法执行
+      │
+  T3: LLM 推理完成 → _process_with_llm() 返回
+  T4: process_audio() 返回 → WebSocket 主循环恢复
+  T5: 处理积压的音频（但已经太晚了）
+
+  3.3 代码证据
+
+  打断检测代码确实存在 (system.py:191-196)：
+  if self.dialog_state.state in [DialogState.SPEAKING, DialogState.THINKING]:
+      if self.acoustic_vad.check_interrupt(audio_chunk):
+          return await self._start_interrupt_confirmation()
+
+  但问题是：这段代码在 process_audio() 内部，而 process_audio() 在 LLM 推理期间根本没有被调用。
+
+  四、对比分析
+
+  4.1 当前模式（阻塞）
+
+  前端发送音频 ──────────────────────────────────────────►
+                      │
+                      ▼
+                WebSocket 接收
+                      │
+                      ▼ await
+                handle_audio()
+                      │
+                      ▼ await (阻塞)
+                process_audio()
+                      │
+                      ▼ await (阻塞 ~2-10秒)
+                _process_with_llm()
+                      │
+                      ▼
+                LLM 推理完成
+                      │
+                      ▼
+                返回，接收下一个音频
+
+  4.2 理想模式（非阻塞）
+
+  前端发送音频 ──────────────────────────────────────────►
+                      │
+                      ▼
+                WebSocket 接收 (持续运行)
+                      │
+                      ├──────────────────┐
+                      ▼                  ▼
+                音频接收任务        LLM 推理任务 (后台)
+                (持续监听)          (独立运行)
+                      │                  │
+                      ▼                  ▼
+                检测打断 ────────► 取消 LLM 任务
+
+  五、影响范围
+
+  ┌──────────────────────┬───────────────────────────────┐
+  │         场景         │             影响              │
+  ├──────────────────────┼───────────────────────────────┤
+  │ LLM 推理期间用户说话 │ 无法检测，必须等 LLM 完成     │
+  ├──────────────────────┼───────────────────────────────┤
+  │ 用户想打断 LLM 思考  │ 需要等 LLM 开始输出后才能打断 │
+  ├──────────────────────┼───────────────────────────────┤
+  │ 推理时间 > 3秒       │ 用户体验明显下降              │
+  └──────────────────────┴───────────────────────────────┘
+
+  六、解决方案建议
+
+  方案 A：将 LLM 处理改为后台任务
+
+  async def _finalize_streaming(self):
+      # 不直接 await，而是创建后台任务
+      self._llm_task = asyncio.create_task(self._process_with_llm(...))
+      return None  # 立即返回，让 WebSocket 主循环继续
+
+  方案 B：使用独立的音频接收循环
+
+  async def start_audio_loop(self):
+      while True:
+          audio = await self.audio_queue.get()
+          await self._process_audio_internal(audio)
+
+  方案 C：在 LLM 流式输出中定期 yield
+
+  async for chunk in stream:
+      # 处理 chunk
+      await asyncio.sleep(0)  # 让出控制权，允许处理其他任务
+
+  七、结论
+
+  当前系统存在并发缺陷：在 THINKING 状态下，系统确实是"单线程阻塞"的，无法实时监听前端音频输入。
+
+  需要重构为：
+  1. 音频接收与处理解耦
+  2. LLM 推理作为后台任务运行
+  3. 主循环持续监听音频，支持随时打断
