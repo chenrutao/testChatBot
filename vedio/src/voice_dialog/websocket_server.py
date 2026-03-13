@@ -56,8 +56,8 @@ class ConnectionManager:
         system.on_state_change(lambda old, new: asyncio.create_task(
             self.send_state_change(client_id, old, new)
         ))
-        system.on_partial_asr(lambda text: asyncio.create_task(
-            self.send_partial_asr(client_id, text)
+        system.on_partial_asr(lambda text, is_final: asyncio.create_task(
+            self.send_partial_asr(client_id, text, is_final)
         ))
         system.on_tool_executing(lambda tool_name, tool_args: asyncio.create_task(
             self.send_tool_executing(client_id, tool_name, tool_args)
@@ -257,14 +257,17 @@ class ConnectionManager:
             }
         })
 
-    async def send_partial_asr(self, client_id: str, text: str):
+    async def send_partial_asr(self, client_id: str, text: str, is_final: bool):
         """发送部分ASR结果"""
         # 检查数据有效性
         if not text or not text.strip():
             return
         await self.send_json(client_id, {
             "type": "partial_asr",
-            "data": {"text": text}
+            "data": {
+                "text": text,
+                "is_final": is_final
+            }
         })
 
     async def send_latency_update(self, client_id: str, data):

@@ -579,7 +579,7 @@ class VoiceDialogSystem:
             self._first_asr_received = True
 
         # 通知部分ASR结果
-        await self._notify_partial_asr(text)
+        await self._notify_partial_asr(text, is_final)
 
         # 更新时延追踪的文本
         latency_tracker.update_text(text)
@@ -951,14 +951,14 @@ class VoiceDialogSystem:
             except Exception as e:
                 logger.error(f"结果回调错误: {e}")
 
-    async def _notify_partial_asr(self, text: str):
+    async def _notify_partial_asr(self, text: str, is_final: bool):
         """通知部分ASR结果"""
         for callback in self._on_partial_asr_callbacks:
             try:
                 if asyncio.iscoroutinefunction(callback):
-                    await callback(text)
+                    await callback(text, is_final)
                 else:
-                    callback(text)
+                    callback(text, is_final)
             except Exception as e:
                 logger.error(f"ASR回调错误: {e}")
 

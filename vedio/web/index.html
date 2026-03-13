@@ -443,7 +443,7 @@
                     updateDialogStatus(message.data.new_state);
                     break;
                 case 'partial_asr':
-                    updatePartialText(`识别中: ${message.data.text}`);
+                    handlePartialASR(message.data.text, message.data.is_final);
                     break;
                 case 'tool_executing':
                     showToolExecuting(message.data.tool_name, message.data.tool_args);
@@ -467,6 +467,8 @@
         // 流式输出状态
         let streamingMessageId = null;
         let streamingContent = '';
+        let currentUserMessageId = null;  // 当前用户消息气泡ID
+        let currentUserContent = '';  // 当前用户消息内容
 
         // 流式音频播放器 - 使用队列连续播放
         let audioQueue = [];
@@ -554,6 +556,51 @@
             isPlayingAudio = false;
         }
 
+        // 处理ASR流式结果
+        function handlePartialASR(text, is_final) {
+            // 如果是第一个ASR结果，创建用户消息气泡
+            if (!currentUserMessageId) {
+                const chatContainer = document.getElementById('chatContainer');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message user';
+                messageDiv.id = 'current-user-message';
+                messageDiv.innerHTML = '<div class="message-bubble"></div><div class="message-meta"><span>' + new Date().toLocaleTimeString() + '</span></div>';
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                currentUserMessageId = 'current-user-message';
+                currentUserContent = '';
+            }
+
+            // 更新内容
+            currentUserContent = text;
+
+            // 更新显示
+            const messageDiv = document.getElementById(currentUserMessageId);
+            if (messageDiv) {
+                const bubble = messageDiv.querySelector('.message-bubble');
+                if (bubble) {
+                    // 如果是最终结果，显示纯文本；否则显示带识别中提示
+                    if (is_final) {
+                        bubble.textContent = text;
+                        bubble.style.opacity = '1';
+                    } else {
+                        bubble.innerHTML = text + '<span style="opacity: 0.6; font-size: 0.9em;"> (识别中...)</span>';
+                        bubble.style.opacity = '0.8';
+                    }
+                }
+                // 滚动到底部
+                const chatContainer = document.getElementById('chatContainer');
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+
+            // 更新部分文本区域
+            if (!is_final) {
+                updatePartialText(`识别中: ${text}`);
+            } else {
+                updatePartialText(`识别完成: ${text}`);
+            }
+        }
+
         // 处理LLM流式输出块
         function handleLLMChunk(chunk) {
             // 如果是第一个块，创建新的消息元素
@@ -592,33 +639,72 @@
         function handleResult(data) {
             updatePartialText('');
 
-            // 清除流式消息ID
-            const streamingMsg = document.getElementById('streaming-message');
-            if (streamingMsg) {
-                streamingMsg.remove();
+            // 处理用户消息气泡
+            const currentUserMsg = document.getElementById('current-user-message');
+            if (currentUserMsg && data.text) {
+                // 更新用户消息气泡的内容和元信息
+                const bubble = currentUserMsg.querySelector('.message-bubble');
+                if (bubble) {
+                    bubble.textContent = data.text;
+                    bubble.style.opacity = '1';
+                }
+
+                // 添加情绪标签
+                let metaHtml = '<div class="message-meta">';
+                if (data.emotion) {
+                    metaHtml += `<span class="emotion-tag emotion-${data.emotion}">${getEmotionText(data.emotion)}</span>`;
+                }
+                metaHtml += `<span>${new Date().toLocaleTimeString()}</span>`;
+                metaHtml += '</div>';
+
+                currentUserMsg.innerHTML = `<div class="message-bubble">${escapeHtml(data.text)}</div>${metaHtml}`;
+                currentUserMsg.removeAttribute('id');  // 移除临时ID
             }
+
+            // 清除用户消息状态
+            currentUserMessageId = null;
+            currentUserContent = '';
+
+            // 处理流式助手消息
+            const streamingMsg = document.getElementById('streaming-message');
+            if (streamingMsg && data.response) {
+                // 更新流式消息的内容和元信息
+                const bubble = streamingMsg.querySelector('.message-bubble');
+                if (bubble) {
+                    bubble.textContent = data.response;
+                }
+
+                // 添加元信息
+                let metaHtml = '<div class="message-meta">';
+                if (data.llm_emotion) {
+                    metaHtml += `<span class="emotion-tag emotion-${data.llm_emotion}">AI: ${getEmotionText(data.llm_emotion)}</span>`;
+                }
+                if (data.tool_calls && data.tool_calls.length > 0) {
+                    metaHtml += `<span style="color: #3a7bd5;">工具: ${data.tool_calls.map(t => t.name).join(', ')}</span>`;
+                }
+                metaHtml += `<span>${new Date().toLocaleTimeString()}</span>`;
+                metaHtml += '</div>';
+
+                streamingMsg.innerHTML = `<div class="message-bubble">${escapeHtml(data.response)}</div>${metaHtml}`;
+                streamingMsg.removeAttribute('id');  // 移除临时ID
+            }
+
+            // 清除流式状态
             streamingMessageId = null;
             streamingContent = '';
 
-            // 添加用户消息
-            if (data.text) {
-                addMessage('user', data.text, {
-                    emotion: data.emotion
+            // 如果没有流式消息，添加助手消息
+            if (!streamingMsg && data.response) {
+                addMessage('assistant', data.response, {
+                    toolCalls: data.tool_calls,
+                    llmEmotion: data.llm_emotion
                 });
             }
 
-            // 添加助手回复（LLM总结后的响应）
-            if (data.response) {
-                addMessage('assistant', data.response, {
-                    toolCalls: data.tool_calls,
-                    llmEmotion: data.llm_emotion  // 大模型情绪
-                });
-
-                // 注意：音频通过 audio_chunk 消息实时播放
-                // 这里只作为备用，如果有完整音频数据也播放
-                if (data.audio && audioQueue.length === 0) {
-                    playAudio(data.audio);
-                }
+            // 注意：音频通过 audio_chunk 消息实时播放
+            // 这里只作为备用，如果有完整音频数据也播放
+            if (data.audio && audioQueue.length === 0) {
+                playAudio(data.audio);
             }
 
             updateEmotionDisplay(data.emotion);
