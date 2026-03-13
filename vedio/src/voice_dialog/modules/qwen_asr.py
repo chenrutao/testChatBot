@@ -328,8 +328,7 @@ class QwenASRProcessor:
         import time
         receive_time = time.time() * 1000
 
-        # v3.6: 降低日志级别为 DEBUG，避免大量日志输出
-        logger.debug(f"[ASR] 收到声学VAD音频流, 时间: {receive_time:.0f}ms, 数据大小: {len(audio_chunk)} bytes")
+        logger.info(f"[ASR] 收到声学VAD音频流, 时间: {receive_time:.0f}ms, 数据大小: {len(audio_chunk)} bytes")
 
         if not self._is_streaming:
             logger.warning("ASR 流式会话未启动")
