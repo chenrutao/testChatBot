@@ -77,6 +77,14 @@ class ConnectionManager:
         system.on_clear_audio(lambda: asyncio.create_task(
             self.send_clear_audio(client_id)
         ))
+        # 注册恢复音频回调（打断取消时）
+        system.on_resume_audio(lambda cached_chunks: asyncio.create_task(
+            self.send_resume_audio(client_id, cached_chunks)
+        ))
+        # 注册打断确认开始回调
+        system.on_interrupt_confirm(lambda: asyncio.create_task(
+            self.send_interrupt_confirm_start(client_id)
+        ))
 
         logger.info(f"客户端连接: {client_id}")
 
@@ -265,6 +273,23 @@ class ConnectionManager:
             "type": "clear_audio"
         })
         logger.info(f"[音频流] 已通知前端清空音频队列: {client_id}")
+
+    async def send_resume_audio(self, client_id: str, cached_chunks: int):
+        """发送恢复音频消息"""
+        await self.send_json(client_id, {
+            "type": "resume_audio",
+            "data": {
+                "cached_chunks": cached_chunks
+            }
+        })
+        logger.info(f"[音频流] 已通知前端恢复播放，缓存音频块数: {cached_chunks}")
+
+    async def send_interrupt_confirm_start(self, client_id: str):
+        """发送打断确认开始消息"""
+        await self.send_json(client_id, {
+            "type": "interrupt_confirm_start"
+        })
+        logger.info(f"[打断] 已通知前端进入打断确认模式")
 
     async def send_tool_executing(self, client_id: str, tool_name: str, tool_args: dict):
         """发送工具执行状态"""

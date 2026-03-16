@@ -201,6 +201,15 @@ class DialogResult:
 
 
 @dataclass
+class InterruptCache:
+    """打断缓存：保存打断确认期间的输出"""
+    llm_tokens: List[str] = field(default_factory=list)  # 缓存的LLM token列表
+    audio_chunks: List[bytes] = field(default_factory=list)  # 缓存的音频数据
+    streaming_text: str = ""  # 已流式输出的文本
+    is_active: bool = False  # 是否正在缓存
+
+
+@dataclass
 class Message:
     """对话消息"""
     role: str  # "user" | "assistant" | "system" | "tool"

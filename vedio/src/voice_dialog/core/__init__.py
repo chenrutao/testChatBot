@@ -17,6 +17,7 @@ from .types import (
     TTSResult,
     DialogResult,
     Message,
+    InterruptCache,
 )
 from .config import Config, get_config
 from .state_machine import DialogStateMachine, SemanticStateMachine
@@ -39,6 +40,7 @@ __all__ = [
     "TTSResult",
     "DialogResult",
     "Message",
+    "InterruptCache",
     # 配置
     "Config",
     "get_config",

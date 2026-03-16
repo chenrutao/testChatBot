@@ -459,6 +459,25 @@
                     stopAudioPlayback();
                     console.log('[音频流] 已清空音频队列');
                     break;
+                case 'resume_audio':
+                    // v3.4: 恢复播放缓存的音频
+                    isInterruptConfirming = false;
+                    console.log('[音频] 恢复播放，缓存音频:', interruptAudioCache.length);
+
+                    // 将缓存音频加入播放队列
+                    audioQueue = audioQueue.concat(interruptAudioCache);
+                    interruptAudioCache = [];
+
+                    // 开始播放
+                    if (!isPlayingAudio && audioQueue.length > 0) {
+                        playNextAudioChunk();
+                    }
+                    break;
+                case 'interrupt_confirm_start':
+                    // v3.4: 开始打断确认，暂停播放
+                    isInterruptConfirming = true;
+                    console.log('[打断] 进入确认模式，暂停播放');
+                    break;
                 case 'pong':
                     break;
             }
@@ -473,8 +492,20 @@
         let isPlayingAudio = false;
         let currentAudio = null;
 
+        // v3.4: 打断确认期间的音频缓存
+        let interruptAudioCache = [];
+        let isInterruptConfirming = false;
+
         // 处理TTS音频块（实时播报）
         function handleAudioChunk(base64Audio) {
+            // v3.4: 检查是否在打断确认模式
+            if (isInterruptConfirming) {
+                // 打断确认期间，缓存音频
+                interruptAudioCache.push(base64Audio);
+                console.log('[音频] 缓存音频，缓存长度:', interruptAudioCache.length);
+                return;
+            }
+
             // 将音频块加入队列
             audioQueue.push(base64Audio);
             console.log('[音频] 加入队列, 队列长度:', audioQueue.length, '播放中:', isPlayingAudio);
@@ -544,6 +575,10 @@
             console.log('[音频] 停止播放，清空队列');
             // 清空队列
             audioQueue = [];
+
+            // v3.4: 清空打断缓存
+            interruptAudioCache = [];
+            isInterruptConfirming = false;
 
             // 停止当前播放
             if (currentAudio) {
@@ -780,6 +815,10 @@
                 // 停止流式音频播放
                 stopAudioPlayback();
 
+                // v3.4: 重置打断确认状态
+                isInterruptConfirming = false;
+                interruptAudioCache = [];
+
                 // 停止旧的音频播放器
                 const audio = document.getElementById('audioPlayer');
                 if (audio) {
@@ -796,6 +835,10 @@
 
                 // 停止音频播放
                 stopAudioPlayback();
+
+                // v3.4: 重置打断确认状态
+                isInterruptConfirming = false;
+                interruptAudioCache = [];
 
                 const chatContainer = document.getElementById('chatContainer');
                 chatContainer.innerHTML = `
