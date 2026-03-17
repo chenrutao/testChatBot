@@ -303,10 +303,21 @@ class VoiceDialogSystem:
             should_finalize = False
             finalize_reason = ""
 
-            # 条件1: 语义VAD判断完整
+            # 条件1: 语义VAD判断完整 + 静音时间足够
+            # v3.6: 即使语义完整，也需要等待静音确认用户确实说完了
+            # 避免用户说多个句子时，第一个句子结束就提前结束语音段
             if self.semantic_vad.processor.is_complete():
-                should_finalize = True
-                finalize_reason = "语义完整"
+                # 语义完整，但需要等待静音确认
+                # 如果静音时间超过阈值，确认用户说完了
+                if silence_elapsed >= self.SILENCE_THRESHOLD_MS:
+                    should_finalize = True
+                    finalize_reason = f"语义完整+静音确认({silence_elapsed:.0f}ms)"
+                elif silence_elapsed >= 200:  # 至少200ms静音
+                    # 有一定静音时间，检查是否有后续语音的迹象
+                    # 如果文本以句号结尾，说明是一个完整句子，可以稍微缩短等待时间
+                    if self._asr_text_buffer.rstrip().endswith(('。', '！', '？', '.', '!', '?')):
+                        should_finalize = True
+                        finalize_reason = f"语义完整+句号结尾+静音({silence_elapsed:.0f}ms)"
 
             # 条件2: 静音时间超过阈值且有ASR文本
             elif silence_elapsed >= self.MAX_SILENCE_WAIT_MS and self._asr_text_buffer:
