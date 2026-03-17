@@ -303,9 +303,6 @@ class VoiceDialogSystem:
             self._last_speech_time = current_time
             self._silence_start_time = None
 
-            # ========== v3.4: 收集用户语音数据 ==========
-            self._user_audio_buffer.append(audio_chunk)
-
         # 5. 检测到静音，检查是否应该结束
         elif vad_result["event"] == "silence_detected" and self._is_streaming:
             silence_duration = vad_result["silence_duration"]
@@ -341,8 +338,6 @@ class VoiceDialogSystem:
         # 6. 流式处理音频（发送到ASR和情绪识别）
         if self._is_streaming:
             await self._process_audio_parallel(audio_chunk)
-            # ========== v3.4: 持续收集用户语音数据 ==========
-            self._user_audio_buffer.append(audio_chunk)
 
         return None
 
@@ -590,6 +585,8 @@ class VoiceDialogSystem:
 
     async def _process_audio_parallel(self, audio_chunk: bytes):
         """并行处理音频"""
+        # ========== v3.4: 在ASR处理时收集用户语音数据 ==========
+        self._user_audio_buffer.append(audio_chunk)
         await asyncio.gather(
             self.asr_processor.process_chunk(audio_chunk),
             self.emotion_recognizer.process_audio(audio_chunk)
