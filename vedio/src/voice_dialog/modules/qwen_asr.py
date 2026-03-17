@@ -75,8 +75,8 @@ class StreamingASRCallback(RecognitionCallback):
                     if self._on_result and self._loop:
                         # 使用 call_soon_threadsafe 在主线程事件循环中调度
                         self._loop.call_soon_threadsafe(
-                            lambda t=text: asyncio.create_task(
-                                self._on_result(t, is_final=False)
+                            lambda: asyncio.create_task(
+                                self._on_result(text, is_final=False)
                             )
                         )
                     elif self._on_result:
@@ -132,8 +132,8 @@ class OmniAsrCallback(OmniRealtimeCallback):
 
                     if self._on_result and self._loop:
                         self._loop.call_soon_threadsafe(
-                            lambda s=stash_text: asyncio.create_task(
-                                self._on_result(s, is_final=False)
+                            lambda: asyncio.create_task(
+                                self._on_result(stash_text, is_final=False)
                             )
                         )
                     elif self._on_result:
@@ -148,8 +148,8 @@ class OmniAsrCallback(OmniRealtimeCallback):
 
                     if self._on_result and self._loop:
                         self._loop.call_soon_threadsafe(
-                            lambda f=final_text: asyncio.create_task(
-                                self._on_result(f, is_final=True)
+                            lambda: asyncio.create_task(
+                                self._on_result(final_text, is_final=True)
                             )
                         )
                     elif self._on_result:

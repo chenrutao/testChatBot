@@ -110,7 +110,6 @@ class SileroVADWrapper:
             with torch.no_grad():
                 speech_prob = self._model(audio_tensor, sample_rate).item()
 
-
             # 概率>0.5认为是语音
             self._last_result = speech_prob > 0.5
             self._initialized = True
