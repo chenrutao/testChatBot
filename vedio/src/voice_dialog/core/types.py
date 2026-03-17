@@ -190,9 +190,6 @@ class DialogResult:
     # 大模型情绪
     llm_emotion: EmotionType = EmotionType.NEUTRAL  # 大模型情绪类型
 
-    # 用户语音音频文件路径
-    user_audio_path: Optional[str] = None      # 用户语音wav文件路径
-
     def to_dict(self) -> Dict:
         return {
             "query_id": self.query_id,
@@ -205,8 +202,7 @@ class DialogResult:
             "is_interrupt": self.is_interrupt,
             "dialog_state": self.dialog_state.value,
             "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in self.tool_calls],
-            "has_audio": self.response_audio is not None,
-            "user_audio_path": self.user_audio_path
+            "has_audio": self.response_audio is not None
         }
 
 

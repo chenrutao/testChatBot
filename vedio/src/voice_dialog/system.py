@@ -110,7 +110,6 @@ class VoiceDialogSystem:
         self._on_llm_chunk_callbacks: List[Callable] = []  # LLM流式输出回调
         self._on_audio_chunk_callbacks: List[Callable] = []  # TTS音频块回调
         self._on_clear_audio_callbacks: List[Callable] = []  # 清空音频回调
-        self._on_query_start_callbacks: List[Callable] = []  # v3.4: 新query开始回调
 
         # ========== 流式处理状态 ==========
         self._is_streaming = False
@@ -285,9 +284,6 @@ class VoiceDialogSystem:
                 self._current_query_id = str(uuid.uuid4())[:8]
                 self._user_audio_buffer = []
                 logger.info(f"[Query] 新query_id: {self._current_query_id}")
-
-                # 通知前端新query开始
-                await self._notify_query_start(self._current_query_id, "voice")
 
                 # 开始新的句子追踪
                 latency_tracker.start_sentence()
@@ -506,7 +502,7 @@ class VoiceDialogSystem:
         logger.info(f"[打断] 最终识别文本: '{recognized_text}'")
 
         # ========== v3.4: 保存用户语音音频 ==========
-        user_audio_path = self._save_user_audio_to_wav(self._current_query_id)
+        self._save_user_audio_to_wav(self._current_query_id)
 
         # 检查有效性
         if not recognized_text or not recognized_text.strip():
@@ -516,8 +512,7 @@ class VoiceDialogSystem:
                 query_id=self._current_query_id,
                 text="",
                 semantic_state=SemanticState.REJECTED,
-                dialog_state=DialogState.IDLE,
-                user_audio_path=user_audio_path
+                dialog_state=DialogState.IDLE
             )
 
         # 获取语义VAD结果
@@ -540,8 +535,7 @@ class VoiceDialogSystem:
                 semantic_confidence,
                 emotion_result.emotion,
                 emotion_result.confidence,
-                emotion_result.intensity,
-                user_audio_path
+                emotion_result.intensity
             )
         )
 
@@ -650,7 +644,7 @@ class VoiceDialogSystem:
         self.semantic_vad.processor.set_interrupt_mode(False)
 
         # ========== v3.4: 保存用户语音音频 ==========
-        user_audio_path = self._save_user_audio_to_wav(self._current_query_id)
+        self._save_user_audio_to_wav(self._current_query_id)
 
         try:
             await self.dialog_state.transition_to(DialogState.PROCESSING, "语音段结束")
@@ -692,8 +686,7 @@ class VoiceDialogSystem:
                     query_id=self._current_query_id,
                     text="",
                     semantic_state=SemanticState.REJECTED,
-                    dialog_state=DialogState.IDLE,
-                    user_audio_path=user_audio_path
+                    dialog_state=DialogState.IDLE
                 )
 
             if semantic_state == SemanticState.REJECTED:
@@ -703,8 +696,7 @@ class VoiceDialogSystem:
                     query_id=self._current_query_id,
                     text="",
                     semantic_state=SemanticState.REJECTED,
-                    dialog_state=DialogState.IDLE,
-                    user_audio_path=user_audio_path
+                    dialog_state=DialogState.IDLE
                 )
 
             # ========== v3.5: LLM 作为后台任务运行 ==========
@@ -717,8 +709,7 @@ class VoiceDialogSystem:
                     semantic_confidence,
                     emotion,
                     emotion_confidence,
-                    emotion_intensity,
-                    user_audio_path
+                    emotion_intensity
                 )
             )
 
@@ -740,12 +731,11 @@ class VoiceDialogSystem:
         semantic_confidence: float,
         emotion: EmotionType,
         emotion_confidence: float,
-        emotion_intensity: float,
-        user_audio_path: Optional[str] = None
+        emotion_intensity: float
     ) -> DialogResult:
         """融合阶段：文本+情绪 → LLM处理（流式显示 + 按句子TTS播报）
 
-        v3.4: 支持query_id和用户音频路径
+        v3.4: 支持query_id
         """
 
         # ========== 清空旧音频，准备新问题播报 ==========
@@ -837,8 +827,7 @@ class VoiceDialogSystem:
                 response="",
                 response_audio=b"",
                 is_interrupt=True,
-                dialog_state=DialogState.IDLE,
-                user_audio_path=user_audio_path
+                dialog_state=DialogState.IDLE
             )
 
         # 检查是否被打断
@@ -855,8 +844,7 @@ class VoiceDialogSystem:
                 response="".join(response_text_parts),
                 response_audio=b"",
                 is_interrupt=True,
-                dialog_state=DialogState.IDLE,
-                user_audio_path=user_audio_path
+                dialog_state=DialogState.IDLE
             )
 
         latency_tracker.mark_end("llm_process", {
@@ -934,8 +922,7 @@ class VoiceDialogSystem:
             dialog_state=DialogState.SPEAKING,
             tool_calls=llm_response.tool_calls,
             tool_results=tool_results,
-            llm_emotion=llm_response.llm_emotion,
-            user_audio_path=user_audio_path
+            llm_emotion=llm_response.llm_emotion
         )
 
         await self._notify_result(result)
@@ -953,9 +940,6 @@ class VoiceDialogSystem:
         # ========== v3.4: 生成新的query_id ==========
         self._current_query_id = str(uuid.uuid4())[:8]
         logger.info(f"[Query] 文本输入query_id: {self._current_query_id}")
-
-        # 通知前端新query开始
-        await self._notify_query_start(self._current_query_id, "text")
 
         # 开始时延追踪
         latency_tracker.start_sentence()
@@ -1101,21 +1085,6 @@ class VoiceDialogSystem:
     def on_latency_update(self, callback: Callable):
         """注册时延更新回调"""
         self._on_latency_update_callbacks.append(callback)
-
-    def on_query_start(self, callback: Callable):
-        """v3.4: 注册新query开始回调"""
-        self._on_query_start_callbacks.append(callback)
-
-    async def _notify_query_start(self, query_id: str, input_type: str = "voice"):
-        """v3.4: 通知新query开始"""
-        for callback in self._on_query_start_callbacks:
-            try:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(query_id, input_type)
-                else:
-                    callback(query_id, input_type)
-            except Exception as e:
-                logger.error(f"Query开始回调错误: {e}")
 
     def _on_latency_update(self, data):
         """时延数据更新回调"""

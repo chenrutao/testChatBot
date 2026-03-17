@@ -77,10 +77,6 @@ class ConnectionManager:
         system.on_clear_audio(lambda: asyncio.create_task(
             self.send_clear_audio(client_id)
         ))
-        # v3.4: 注册query开始回调
-        system.on_query_start(lambda qid, itype: asyncio.create_task(
-            self.send_query_start(client_id, qid, itype)
-        ))
 
         logger.info(f"客户端连接: {client_id}")
 
@@ -224,9 +220,7 @@ class ConnectionManager:
                 # 不发送音频，因为已通过audio_chunk实时发送
                 "has_audio": False,
                 # 大模型情绪
-                "llm_emotion": result.llm_emotion.value,
-                # v3.4: 用户语音音频文件路径
-                "user_audio_path": result.user_audio_path
+                "llm_emotion": result.llm_emotion.value
             }
         }
 
@@ -277,17 +271,6 @@ class ConnectionManager:
             "type": "clear_audio"
         })
         logger.info(f"[音频流] 已通知前端清空音频队列: {client_id}")
-
-    async def send_query_start(self, client_id: str, query_id: str, input_type: str):
-        """v3.4: 发送query开始消息"""
-        await self.send_json(client_id, {
-            "type": "query_start",
-            "data": {
-                "query_id": query_id,
-                "input_type": input_type  # "voice" 或 "text"
-            }
-        })
-        logger.info(f"[Query] 已通知前端query开始: {query_id}, 类型: {input_type}")
 
     async def send_tool_executing(self, client_id: str, tool_name: str, tool_args: dict):
         """发送工具执行状态"""
