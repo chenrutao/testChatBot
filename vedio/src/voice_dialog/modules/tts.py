@@ -463,7 +463,7 @@ class StreamingTTSProcessor:
     """
 
     # 句子结束符
-    SENTENCE_ENDINGS = ['。', '！', '？', '；', '\n']
+    SENTENCE_ENDINGS = ['。', '！', '？', '；', '。', '，', '!', '?', ';', ',','\n']
 
     # 配置参数
     MIN_CHUNK_SIZE = 5       # 最小分段长度（字符）

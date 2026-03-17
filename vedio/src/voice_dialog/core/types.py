@@ -1,6 +1,8 @@
 """
 全双工语音对话系统 v3.0 - 核心数据类型
+v3.4 更新: 添加query_id支持，关联用户问题和大模型回复
 """
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict, Any
@@ -161,21 +163,24 @@ class TTSResult:
 @dataclass
 class DialogResult:
     """完整对话结果"""
+    # Query ID - 用于关联用户问题和大模型回复
+    query_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+
     # 输入处理
-    text: str                              # 识别的文本
-    text_confidence: float = 1.0           # 文本置信度
+    text: str = ""                              # 识别的文本
+    text_confidence: float = 1.0               # 文本置信度
     semantic_state: SemanticState = SemanticState.COMPLETE  # 语义状态
 
     # 情绪
     emotion: EmotionType = EmotionType.NEUTRAL  # 情绪类型
-    emotion_confidence: float = 1.0        # 情绪置信度
+    emotion_confidence: float = 1.0            # 情绪置信度
 
     # 响应
-    response: str = ""                     # AI响应文本
-    response_audio: Optional[bytes] = None # TTS音频
+    response: str = ""                         # AI响应文本
+    response_audio: Optional[bytes] = None     # TTS音频
 
     # 状态
-    is_interrupt: bool = False             # 是否是打断
+    is_interrupt: bool = False                 # 是否是打断
     dialog_state: DialogState = DialogState.IDLE
 
     # 工具调用
@@ -185,8 +190,12 @@ class DialogResult:
     # 大模型情绪
     llm_emotion: EmotionType = EmotionType.NEUTRAL  # 大模型情绪类型
 
+    # 用户语音音频文件路径
+    user_audio_path: Optional[str] = None      # 用户语音wav文件路径
+
     def to_dict(self) -> Dict:
         return {
+            "query_id": self.query_id,
             "text": self.text,
             "text_confidence": self.text_confidence,
             "semantic_state": self.semantic_state.value,
@@ -196,7 +205,8 @@ class DialogResult:
             "is_interrupt": self.is_interrupt,
             "dialog_state": self.dialog_state.value,
             "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in self.tool_calls],
-            "has_audio": self.response_audio is not None
+            "has_audio": self.response_audio is not None,
+            "user_audio_path": self.user_audio_path
         }
 
 

@@ -66,8 +66,8 @@ class ConnectionManager:
             self.send_latency_update(client_id, data)
         ))
         # 注册LLM流式输出回调
-        system.on_llm_chunk(lambda chunk: asyncio.create_task(
-            self.send_llm_chunk(client_id, chunk)
+        system.on_llm_chunk(lambda chunk, qid=None: asyncio.create_task(
+            self.send_llm_chunk(client_id, chunk, qid)
         ))
         # 注册TTS音频块回调（实时播报）
         system.on_audio_chunk(lambda audio: asyncio.create_task(
@@ -76,6 +76,10 @@ class ConnectionManager:
         # 注册清空音频回调（新问题开始时）
         system.on_clear_audio(lambda: asyncio.create_task(
             self.send_clear_audio(client_id)
+        ))
+        # v3.4: 注册query开始回调
+        system.on_query_start(lambda qid, itype: asyncio.create_task(
+            self.send_query_start(client_id, qid, itype)
         ))
 
         logger.info(f"客户端连接: {client_id}")
@@ -206,6 +210,7 @@ class ConnectionManager:
         data = {
             "type": "result",
             "data": {
+                "query_id": result.query_id,  # v3.4: 添加query_id
                 "text": result.text,
                 "text_confidence": result.text_confidence,
                 "semantic_state": result.semantic_state.value,
@@ -219,7 +224,9 @@ class ConnectionManager:
                 # 不发送音频，因为已通过audio_chunk实时发送
                 "has_audio": False,
                 # 大模型情绪
-                "llm_emotion": result.llm_emotion.value
+                "llm_emotion": result.llm_emotion.value,
+                # v3.4: 用户语音音频文件路径
+                "user_audio_path": result.user_audio_path
             }
         }
 
@@ -228,7 +235,7 @@ class ConnectionManager:
 
         await self.send_json(client_id, data)
 
-    async def send_llm_chunk(self, client_id: str, chunk: str):
+    async def send_llm_chunk(self, client_id: str, chunk: str, query_id: str = None):
         """发送LLM流式输出块"""
         # 检查数据有效性（提前过滤空消息）
         if not chunk or not chunk.strip():
@@ -238,10 +245,15 @@ class ConnectionManager:
         if client_id not in self.active_connections:
             return
 
-        await self.send_json(client_id, {
+        data = {
             "type": "llm_chunk",
             "data": {"text": chunk}
-        })
+        }
+        # v3.4: 添加query_id
+        if query_id:
+            data["data"]["query_id"] = query_id
+
+        await self.send_json(client_id, data)
 
     async def send_audio_chunk(self, client_id: str, audio_data: bytes):
         """发送TTS音频块（实时播报）"""
@@ -265,6 +277,17 @@ class ConnectionManager:
             "type": "clear_audio"
         })
         logger.info(f"[音频流] 已通知前端清空音频队列: {client_id}")
+
+    async def send_query_start(self, client_id: str, query_id: str, input_type: str):
+        """v3.4: 发送query开始消息"""
+        await self.send_json(client_id, {
+            "type": "query_start",
+            "data": {
+                "query_id": query_id,
+                "input_type": input_type  # "voice" 或 "text"
+            }
+        })
+        logger.info(f"[Query] 已通知前端query开始: {query_id}, 类型: {input_type}")
 
     async def send_tool_executing(self, client_id: str, tool_name: str, tool_args: dict):
         """发送工具执行状态"""

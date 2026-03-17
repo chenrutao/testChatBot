@@ -133,6 +133,14 @@
             background: rgba(255,255,255,0.1);
         }
 
+        .query-id {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            background: rgba(58, 123, 213, 0.3);
+            color: #00d2ff;
+        }
+
         .emotion-positive { background: rgba(76, 175, 80, 0.3); }
         .emotion-negative { background: rgba(244, 67, 54, 0.3); }
         .emotion-angry { background: rgba(255, 87, 34, 0.3); }
@@ -436,6 +444,9 @@
             console.log('收到消息:', message.type);
 
             switch (message.type) {
+                case 'query_start':
+                    handleQueryStart(message.data);
+                    break;
                 case 'result':
                     handleResult(message.data);
                     break;
@@ -449,7 +460,7 @@
                     showToolExecuting(message.data.tool_name, message.data.tool_args);
                     break;
                 case 'llm_chunk':
-                    handleLLMChunk(message.data.text);
+                    handleLLMChunk(message.data.text, message.data.query_id);
                     break;
                 case 'audio_chunk':
                     handleAudioChunk(message.data.audio);
@@ -464,9 +475,48 @@
             }
         }
 
+        // v3.4: 处理query开始消息
+        function handleQueryStart(data) {
+            const queryId = data.query_id;
+            const inputType = data.input_type;
+
+            console.log(`[Query] 新query开始: ${queryId}, 类型: ${inputType}`);
+
+            // 保存当前query_id
+            currentQueryId = queryId;
+
+            // 创建用户气泡占位（等待ASR结果）
+            const chatContainer = document.getElementById('chatContainer');
+            const userMessageDiv = document.createElement('div');
+            userMessageDiv.className = 'message user';
+            userMessageDiv.id = `user-${queryId}`;
+            userMessageDiv.innerHTML = `
+                <div class="message-bubble" id="user-bubble-${queryId}">
+                    ${inputType === 'text' ? '输入中...' : '识别中...'}
+                </div>
+                <div class="message-meta">
+                    <span class="query-id">ID: ${queryId}</span>
+                    <span>${new Date().toLocaleTimeString()}</span>
+                </div>
+            `;
+            chatContainer.appendChild(userMessageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            // 初始化query映射
+            queryMap[queryId] = {
+                userMessage: userMessageDiv,
+                assistantMessage: null,
+                inputType: inputType
+            };
+        }
+
         // 流式输出状态
         let streamingMessageId = null;
         let streamingContent = '';
+
+        // v3.4: query_id管理
+        let currentQueryId = null;
+        let queryMap = {};  // 存储query_id -> {userMessage, assistantMessage}的映射
 
         // 流式音频播放器 - 使用队列连续播放
         let audioQueue = [];
@@ -555,73 +605,157 @@
         }
 
         // 处理LLM流式输出块
-        function handleLLMChunk(chunk) {
-            // 如果是第一个块，创建新的消息元素
-            if (!streamingMessageId) {
+        function handleLLMChunk(chunk, queryId) {
+            // v3.4: 使用query_id来关联消息
+            const effectiveQueryId = queryId || currentQueryId;
+
+            // 检查是否已有该query_id的助手消息
+            let messageDiv = null;
+            if (effectiveQueryId && queryMap[effectiveQueryId]) {
+                messageDiv = queryMap[effectiveQueryId].assistantMessage;
+            }
+
+            // 如果没有找到，创建新的消息元素
+            if (!messageDiv) {
                 const chatContainer = document.getElementById('chatContainer');
-                const messageDiv = document.createElement('div');
+                messageDiv = document.createElement('div');
                 messageDiv.className = 'message assistant';
-                messageDiv.id = 'streaming-message';
-                messageDiv.innerHTML = '<div class="message-bubble"></div><div class="message-meta"><span>' + new Date().toLocaleTimeString() + '</span></div>';
+                messageDiv.id = `assistant-${effectiveQueryId || 'streaming'}`;
+
+                let metaHtml = '<div class="message-meta">';
+                if (effectiveQueryId) {
+                    metaHtml += `<span class="query-id">ID: ${effectiveQueryId}</span>`;
+                }
+                metaHtml += `<span>${new Date().toLocaleTimeString()}</span></div>`;
+
+                messageDiv.innerHTML = `<div class="message-bubble"></div>${metaHtml}`;
                 chatContainer.appendChild(messageDiv);
                 chatContainer.scrollTop = chatContainer.scrollHeight;
-                streamingMessageId = 'streaming-message';
-                streamingContent = '';
+
+                // 保存到query映射
+                if (effectiveQueryId && queryMap[effectiveQueryId]) {
+                    queryMap[effectiveQueryId].assistantMessage = messageDiv;
+                }
+            }
+
+            // 获取或初始化内容
+            const bubble = messageDiv.querySelector('.message-bubble');
+            if (!bubble.dataset.streaming) {
+                bubble.dataset.streaming = 'true';
+                bubble.dataset.content = '';
             }
 
             // 累积内容
-            streamingContent += chunk;
+            const currentContent = bubble.dataset.content || '';
+            const newContent = currentContent + chunk;
+            bubble.dataset.content = newContent;
+            bubble.textContent = newContent;
 
-            // 更新显示
-            const messageDiv = document.getElementById(streamingMessageId);
-            if (messageDiv) {
-                const bubble = messageDiv.querySelector('.message-bubble');
-                if (bubble) {
-                    bubble.textContent = streamingContent;
-                }
-                // 滚动到底部
-                const chatContainer = document.getElementById('chatContainer');
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
+            // 滚动到底部
+            const chatContainer = document.getElementById('chatContainer');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
 
             // 更新部分文本区域
-            updatePartialText(`回复中: ${streamingContent}`);
+            updatePartialText(`回复中: ${newContent}`);
         }
 
         // 处理对话结果
         function handleResult(data) {
             updatePartialText('');
 
-            // 清除流式消息ID
-            const streamingMsg = document.getElementById('streaming-message');
-            if (streamingMsg) {
-                streamingMsg.remove();
-            }
-            streamingMessageId = null;
-            streamingContent = '';
+            const queryId = data.query_id;
+            console.log(`[Result] 收到结果, query_id: ${queryId}`);
 
-            // 添加用户消息
-            if (data.text) {
-                addMessage('user', data.text, {
-                    emotion: data.emotion
-                });
-            }
+            // v3.4: 更新用户气泡内容
+            if (queryId && queryMap[queryId]) {
+                const userBubble = document.getElementById(`user-bubble-${queryId}`);
+                if (userBubble && data.text) {
+                    userBubble.textContent = data.text;
+                }
 
-            // 添加助手回复（LLM总结后的响应）
-            if (data.response) {
-                addMessage('assistant', data.response, {
-                    toolCalls: data.tool_calls,
-                    llmEmotion: data.llm_emotion  // 大模型情绪
-                });
+                // 更新用户气泡的情绪标签
+                const userMessage = queryMap[queryId].userMessage;
+                if (userMessage && data.emotion) {
+                    const metaDiv = userMessage.querySelector('.message-meta');
+                    if (metaDiv) {
+                        // 在时间前面添加情绪标签
+                        const emotionSpan = document.createElement('span');
+                        emotionSpan.className = `emotion-tag emotion-${data.emotion}`;
+                        emotionSpan.textContent = getEmotionText(data.emotion);
+                        metaDiv.insertBefore(emotionSpan, metaDiv.querySelector('span:last-child'));
+                    }
+                }
 
-                // 注意：音频通过 audio_chunk 消息实时播放
-                // 这里只作为备用，如果有完整音频数据也播放
-                if (data.audio && audioQueue.length === 0) {
-                    playAudio(data.audio);
+                // 更新或创建助手气泡
+                let assistantMessage = queryMap[queryId].assistantMessage;
+                if (data.response) {
+                    if (!assistantMessage) {
+                        // 创建助手气泡
+                        const chatContainer = document.getElementById('chatContainer');
+                        assistantMessage = document.createElement('div');
+                        assistantMessage.className = 'message assistant';
+                        assistantMessage.id = `assistant-${queryId}`;
+
+                        let metaHtml = '<div class="message-meta">';
+                        if (data.llm_emotion) {
+                            metaHtml += `<span class="emotion-tag emotion-${data.llm_emotion}">AI: ${getEmotionText(data.llm_emotion)}</span>`;
+                        }
+                        if (data.tool_calls && data.tool_calls.length > 0) {
+                            metaHtml += `<span style="color: #3a7bd5;">工具: ${data.tool_calls.map(t => t.name).join(', ')}</span>`;
+                        }
+                        metaHtml += `<span class="query-id">ID: ${queryId}</span>`;
+                        metaHtml += `<span>${new Date().toLocaleTimeString()}</span></div>`;
+
+                        assistantMessage.innerHTML = `<div class="message-bubble">${escapeHtml(data.response)}</div>${metaHtml}`;
+                        chatContainer.appendChild(assistantMessage);
+                        queryMap[queryId].assistantMessage = assistantMessage;
+                    } else {
+                        // 更新助手气泡内容
+                        const bubble = assistantMessage.querySelector('.message-bubble');
+                        if (bubble) {
+                            bubble.textContent = data.response;
+                            delete bubble.dataset.streaming;  // 清除流式状态
+                        }
+                    }
+
+                    // 滚动到底部
+                    const chatContainer = document.getElementById('chatContainer');
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            } else {
+                // 兼容旧逻辑：没有query_id时的处理
+                // 清除流式消息ID
+                const streamingMsg = document.getElementById('streaming-message');
+                if (streamingMsg) {
+                    streamingMsg.remove();
+                }
+
+                // 添加用户消息
+                if (data.text) {
+                    addMessage('user', data.text, {
+                        emotion: data.emotion
+                    });
+                }
+
+                // 添加助手回复
+                if (data.response) {
+                    addMessage('assistant', data.response, {
+                        toolCalls: data.tool_calls,
+                        llmEmotion: data.llm_emotion
+                    });
                 }
             }
 
+            // 注意：音频通过 audio_chunk 消息实时播放
+            // 这里只作为备用，如果有完整音频数据也播放
+            if (data.audio && audioQueue.length === 0) {
+                playAudio(data.audio);
+            }
+
             updateEmotionDisplay(data.emotion);
+
+            // 清空当前query_id
+            currentQueryId = null;
         }
 
         // 显示工具执行状态
@@ -796,6 +930,10 @@
 
                 // 停止音频播放
                 stopAudioPlayback();
+
+                // v3.4: 清空query映射
+                queryMap = {};
+                currentQueryId = null;
 
                 const chatContainer = document.getElementById('chatContainer');
                 chatContainer.innerHTML = `

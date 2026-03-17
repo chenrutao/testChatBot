@@ -1,5 +1,5 @@
 """
-全双工语音对话系统 v3.3 - 核心系统
+全双工语音对话系统 v3.4 - 核心系统
 
 架构流程：
 1. 声学VAD检测语音起止与打断
@@ -13,13 +13,17 @@
 9. 支持多轮对话上下文
 10. LLM流式输出 + Qwen3-tts 实时转换
 
-v3.3 更新：
-- TTS模型替换为 Qwen3-tts-flash
-- 情绪识别使用 Qwen3-omni-flash 音频输入能力
-- 情绪识别与ASR、语义VAD并行运行
+v3.4 更新：
+- 添加query_id功能，关联用户问题和大模型回复
+- 识别到完整语音后存储为wav文件
 """
 import asyncio
+import uuid
+import wave
+import os
+from pathlib import Path
 from typing import Optional, Callable, List
+from datetime import datetime
 from .core.logger import logger
 
 from .core import (
@@ -106,6 +110,7 @@ class VoiceDialogSystem:
         self._on_llm_chunk_callbacks: List[Callable] = []  # LLM流式输出回调
         self._on_audio_chunk_callbacks: List[Callable] = []  # TTS音频块回调
         self._on_clear_audio_callbacks: List[Callable] = []  # 清空音频回调
+        self._on_query_start_callbacks: List[Callable] = []  # v3.4: 新query开始回调
 
         # ========== 流式处理状态 ==========
         self._is_streaming = False
@@ -132,6 +137,14 @@ class VoiceDialogSystem:
         self._audio_queue: asyncio.Queue = asyncio.Queue()  # 音频输入队列
         self._audio_processor_task: Optional[asyncio.Task] = None  # 音频处理后台任务
         self._is_processing_audio = False  # 是否正在处理音频
+
+        # ========== v3.4 query_id和音频存储 ==========
+        self._current_query_id: str = ""  # 当前query_id
+        self._user_audio_buffer: List[bytes] = []  # 用户语音音频缓冲区
+        self._audio_storage_dir: Path = Path("audio_records")  # 音频存储目录
+
+        # 确保音频存储目录存在
+        self._audio_storage_dir.mkdir(parents=True, exist_ok=True)
 
         # 添加状态监听
         self.dialog_state.add_listener(self._on_state_change)
@@ -268,6 +281,14 @@ class VoiceDialogSystem:
                 # ========== 新问题开始，清空旧音频流 ==========
                 await self._clear_audio_stream()
 
+                # ========== v3.4: 生成新的query_id并清空音频缓冲区 ==========
+                self._current_query_id = str(uuid.uuid4())[:8]
+                self._user_audio_buffer = []
+                logger.info(f"[Query] 新query_id: {self._current_query_id}")
+
+                # 通知前端新query开始
+                await self._notify_query_start(self._current_query_id, "voice")
+
                 # 开始新的句子追踪
                 latency_tracker.start_sentence()
                 latency_tracker.mark_end("vad_detect", {"event": "speech_start"})
@@ -285,6 +306,9 @@ class VoiceDialogSystem:
 
             self._last_speech_time = current_time
             self._silence_start_time = None
+
+            # ========== v3.4: 收集用户语音数据 ==========
+            self._user_audio_buffer.append(audio_chunk)
 
         # 5. 检测到静音，检查是否应该结束
         elif vad_result["event"] == "silence_detected" and self._is_streaming:
@@ -321,6 +345,8 @@ class VoiceDialogSystem:
         # 6. 流式处理音频（发送到ASR和情绪识别）
         if self._is_streaming:
             await self._process_audio_parallel(audio_chunk)
+            # ========== v3.4: 持续收集用户语音数据 ==========
+            self._user_audio_buffer.append(audio_chunk)
 
         return None
 
@@ -461,6 +487,7 @@ class VoiceDialogSystem:
         打断确认完成，将用户输入交给LLM处理
 
         v3.5: LLM 处理作为后台任务运行
+        v3.4: 保存用户语音并传递query_id
         """
         self._interrupt_confirm_mode = False
         self._is_streaming = False
@@ -478,14 +505,19 @@ class VoiceDialogSystem:
 
         logger.info(f"[打断] 最终识别文本: '{recognized_text}'")
 
+        # ========== v3.4: 保存用户语音音频 ==========
+        user_audio_path = self._save_user_audio_to_wav(self._current_query_id)
+
         # 检查有效性
         if not recognized_text or not recognized_text.strip():
             logger.warning("[打断] 空输入，忽略")
             await self.dialog_state.force_state(DialogState.IDLE, "空输入")
             return DialogResult(
+                query_id=self._current_query_id,
                 text="",
                 semantic_state=SemanticState.REJECTED,
-                dialog_state=DialogState.IDLE
+                dialog_state=DialogState.IDLE,
+                user_audio_path=user_audio_path
             )
 
         # 获取语义VAD结果
@@ -508,7 +540,8 @@ class VoiceDialogSystem:
                 semantic_confidence,
                 emotion_result.emotion,
                 emotion_result.confidence,
-                emotion_result.intensity
+                emotion_result.intensity,
+                user_audio_path
             )
         )
 
@@ -605,6 +638,7 @@ class VoiceDialogSystem:
         结束流式处理，进入融合阶段
 
         v3.5: LLM 处理作为后台任务运行，不阻塞音频接收
+        v3.4: 保存用户语音为wav文件
         """
         if not self._is_streaming:
             return None
@@ -614,6 +648,9 @@ class VoiceDialogSystem:
 
         # 重置语义VAD的打断模式
         self.semantic_vad.processor.set_interrupt_mode(False)
+
+        # ========== v3.4: 保存用户语音音频 ==========
+        user_audio_path = self._save_user_audio_to_wav(self._current_query_id)
 
         try:
             await self.dialog_state.transition_to(DialogState.PROCESSING, "语音段结束")
@@ -652,18 +689,22 @@ class VoiceDialogSystem:
                 logger.warning("空输入，忽略")
                 await self.dialog_state.transition_to(DialogState.IDLE, "空输入")
                 return DialogResult(
+                    query_id=self._current_query_id,
                     text="",
                     semantic_state=SemanticState.REJECTED,
-                    dialog_state=DialogState.IDLE
+                    dialog_state=DialogState.IDLE,
+                    user_audio_path=user_audio_path
                 )
 
             if semantic_state == SemanticState.REJECTED:
                 logger.warning("拒识输入")
                 await self.dialog_state.transition_to(DialogState.IDLE, "拒识输入")
                 return DialogResult(
+                    query_id=self._current_query_id,
                     text="",
                     semantic_state=SemanticState.REJECTED,
-                    dialog_state=DialogState.IDLE
+                    dialog_state=DialogState.IDLE,
+                    user_audio_path=user_audio_path
                 )
 
             # ========== v3.5: LLM 作为后台任务运行 ==========
@@ -676,7 +717,8 @@ class VoiceDialogSystem:
                     semantic_confidence,
                     emotion,
                     emotion_confidence,
-                    emotion_intensity
+                    emotion_intensity,
+                    user_audio_path
                 )
             )
 
@@ -698,9 +740,13 @@ class VoiceDialogSystem:
         semantic_confidence: float,
         emotion: EmotionType,
         emotion_confidence: float,
-        emotion_intensity: float
+        emotion_intensity: float,
+        user_audio_path: Optional[str] = None
     ) -> DialogResult:
-        """融合阶段：文本+情绪 → LLM处理（流式显示 + 按句子TTS播报）"""
+        """融合阶段：文本+情绪 → LLM处理（流式显示 + 按句子TTS播报）
+
+        v3.4: 支持query_id和用户音频路径
+        """
 
         # ========== 清空旧音频，准备新问题播报 ==========
         await self._notify_clear_audio()
@@ -749,6 +795,7 @@ class VoiceDialogSystem:
 
         # 定义LLM文本块回调：只做非阻塞的队列放入
         # v3.5: LLM回调完全非阻塞，立即返回，让TTS消费者独立处理
+        # v3.4: 添加query_id到LLM chunk通知
         def on_llm_chunk(chunk: str):
             if self._should_stop_llm:
                 return
@@ -760,7 +807,7 @@ class VoiceDialogSystem:
                 except asyncio.QueueFull:
                     logger.warning(f"[TTS] 队列已满，跳过文本块: {chunk[:20]}...")
             # 前端显示（创建任务，不阻塞）
-            asyncio.create_task(self._notify_llm_chunk(chunk))
+            asyncio.create_task(self._notify_llm_chunk_with_query(chunk, self._current_query_id))
 
         # 定义工具检测回调
         def on_tool_detected(tool_name: str):
@@ -781,6 +828,7 @@ class VoiceDialogSystem:
             # 返回一个空结果
             await self.dialog_state.force_state(DialogState.IDLE, "被打断")
             return DialogResult(
+                query_id=self._current_query_id,
                 text=text,
                 text_confidence=text_confidence,
                 semantic_state=semantic_state,
@@ -789,7 +837,8 @@ class VoiceDialogSystem:
                 response="",
                 response_audio=b"",
                 is_interrupt=True,
-                dialog_state=DialogState.IDLE
+                dialog_state=DialogState.IDLE,
+                user_audio_path=user_audio_path
             )
 
         # 检查是否被打断
@@ -797,6 +846,7 @@ class VoiceDialogSystem:
             logger.info("[打断] LLM输出已停止")
             await self.dialog_state.force_state(DialogState.IDLE, "被打断")
             return DialogResult(
+                query_id=self._current_query_id,
                 text=text,
                 text_confidence=text_confidence,
                 semantic_state=semantic_state,
@@ -805,7 +855,8 @@ class VoiceDialogSystem:
                 response="".join(response_text_parts),
                 response_audio=b"",
                 is_interrupt=True,
-                dialog_state=DialogState.IDLE
+                dialog_state=DialogState.IDLE,
+                user_audio_path=user_audio_path
             )
 
         latency_tracker.mark_end("llm_process", {
@@ -871,6 +922,7 @@ class VoiceDialogSystem:
 
         # 构建结果
         result = DialogResult(
+            query_id=self._current_query_id,
             text=text,
             text_confidence=text_confidence,
             semantic_state=semantic_state,
@@ -883,6 +935,7 @@ class VoiceDialogSystem:
             tool_calls=llm_response.tool_calls,
             tool_results=tool_results,
             llm_emotion=llm_response.llm_emotion,
+            user_audio_path=user_audio_path
         )
 
         await self._notify_result(result)
@@ -891,8 +944,18 @@ class VoiceDialogSystem:
         return result
 
     async def process_text(self, text: str) -> DialogResult:
-        """处理文本输入"""
+        """处理文本输入
+
+        v3.4: 为文本输入生成query_id
+        """
         logger.info(f"处理文本输入: '{text}'")
+
+        # ========== v3.4: 生成新的query_id ==========
+        self._current_query_id = str(uuid.uuid4())[:8]
+        logger.info(f"[Query] 文本输入query_id: {self._current_query_id}")
+
+        # 通知前端新query开始
+        await self._notify_query_start(self._current_query_id, "text")
 
         # 开始时延追踪
         latency_tracker.start_sentence()
@@ -916,7 +979,8 @@ class VoiceDialogSystem:
             1.0,
             emotion_result.emotion,
             emotion_result.confidence,
-            emotion_result.intensity
+            emotion_result.intensity,
+            None  # 文本输入没有用户语音音频
         )
 
         # 结束时延追踪
@@ -984,6 +1048,17 @@ class VoiceDialogSystem:
             except Exception as e:
                 logger.error(f"LLM流式回调错误: {e}")
 
+    async def _notify_llm_chunk_with_query(self, chunk: str, query_id: str):
+        """v3.4: 通知LLM流式输出块（带query_id）"""
+        for callback in self._on_llm_chunk_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(chunk, query_id)
+                else:
+                    callback(chunk, query_id)
+            except Exception as e:
+                logger.error(f"LLM流式回调错误: {e}")
+
     async def _notify_audio_chunk(self, audio_data: bytes):
         """通知TTS音频块（实时播报）"""
         for callback in self._on_audio_chunk_callbacks:
@@ -1026,6 +1101,21 @@ class VoiceDialogSystem:
     def on_latency_update(self, callback: Callable):
         """注册时延更新回调"""
         self._on_latency_update_callbacks.append(callback)
+
+    def on_query_start(self, callback: Callable):
+        """v3.4: 注册新query开始回调"""
+        self._on_query_start_callbacks.append(callback)
+
+    async def _notify_query_start(self, query_id: str, input_type: str = "voice"):
+        """v3.4: 通知新query开始"""
+        for callback in self._on_query_start_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(query_id, input_type)
+                else:
+                    callback(query_id, input_type)
+            except Exception as e:
+                logger.error(f"Query开始回调错误: {e}")
 
     def _on_latency_update(self, data):
         """时延数据更新回调"""
@@ -1104,6 +1194,43 @@ class VoiceDialogSystem:
         await self._notify_clear_audio()
 
         logger.info("[音频流] 已清空，准备处理新问题")
+
+    def _save_user_audio_to_wav(self, query_id: str) -> Optional[str]:
+        """
+        保存用户语音音频为wav文件
+
+        Args:
+            query_id: 查询ID
+
+        Returns:
+            保存的文件路径，如果失败则返回None
+        """
+        if not self._user_audio_buffer:
+            logger.warning(f"[音频存储] 没有用户语音数据需要保存, query_id: {query_id}")
+            return None
+
+        try:
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"user_audio_{timestamp}_{query_id}.wav"
+            filepath = self._audio_storage_dir / filename
+
+            # 合并所有音频数据
+            audio_data = b"".join(self._user_audio_buffer)
+
+            # 写入wav文件
+            with wave.open(str(filepath), 'wb') as wav_file:
+                wav_file.setnchannels(1)  # 单声道
+                wav_file.setsampwidth(2)  # 16位 = 2字节
+                wav_file.setframerate(16000)  # 16kHz采样率
+                wav_file.writeframes(audio_data)
+
+            logger.info(f"[音频存储] 用户语音已保存: {filepath}, 大小: {len(audio_data)} bytes")
+            return str(filepath)
+
+        except Exception as e:
+            logger.error(f"[音频存储] 保存用户语音失败: {e}")
+            return None
 
     async def _notify_clear_audio(self):
         """通知前端清空音频队列"""
