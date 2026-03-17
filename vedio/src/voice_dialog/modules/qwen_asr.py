@@ -258,7 +258,8 @@ class QwenASRProcessor:
             self._conversation.update_session(
                 output_modalities=[MultiModality.TEXT],
                 enable_input_audio_transcription_params=True,
-                transcription_params=transcription_params
+                transcription_params=transcription_params,
+                enable_turn_detection=False
             )
 
             logger.info("ASR 流式会话已启动")
@@ -267,8 +268,10 @@ class QwenASRProcessor:
         except Exception as e:
             logger.error(f"启动 ASR 流式会话失败: {e}")
             return False
-    
-    
+
+    def commit(self):
+        self._conversation.commit()
+
     async def start_stream(self, on_result: Optional[Callable] = None) -> bool:
         """
         开始流式识别会话
@@ -284,6 +287,9 @@ class QwenASRProcessor:
             try:
                 if self._recognition and self._callback and not self._callback._stopped:
                     self._recognition.stop()
+                if self._conversation and self._callback and not self._callback._stopped:
+                    self._conversation.end_session()
+                    self._conversation.close()
             except Exception:
                 pass
             self._is_streaming = False
@@ -357,6 +363,7 @@ class QwenASRProcessor:
             )
 
         try:
+            logger.info("停止 ASR 流式会话")
             # 停止识别
             if self._recognition and self._callback and not self._callback._stopped:
                 self._recognition.stop()

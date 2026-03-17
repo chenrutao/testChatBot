@@ -387,7 +387,7 @@ class LLMTaskPlanner:
             # 流式调用LLM
             import time
             call_time = time.time() * 1000
-            logger.info(f"[LLM] 调用模型前, 时间: {call_time:.0f}ms, 输入文本: '{llm_input.text[:50]}...'")
+            logger.info(f"[LLM] 调用模型前, 时间: {call_time:.0f}ms, 输入文本: '{llm_input.text}'")
 
             stream = await self.client.chat.completions.create(
                 model=self.config.get("model", "qwen-plus"),

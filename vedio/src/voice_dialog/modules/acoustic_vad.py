@@ -498,7 +498,7 @@ class StreamingVAD:
             self.acoustic_vad.process_frame(frame)
 
             # 检查状态
-            if self.acoustic_vad._is_speech and self.acoustic_vad._last_silence_duration > 0:
+            if self.acoustic_vad._is_speech and self.acoustic_vad._last_silence_duration > 1000:
                 result["event"] = "silence_detected"
                 result["silence_duration"] = self.acoustic_vad.get_silence_duration()
             elif self.acoustic_vad._is_speech:

@@ -29,7 +29,7 @@ from .tools import ToolEngine, MCPClient, SKILLSEngine
 from .tts import TTSEngine, StreamingTTS, StreamingTTSProcessor
 from .user_profile import UserIdentityRecognizer, UserType, UserProfile
 # 保留旧模块以兼容
-from .qwen_omni import QwenOmniProcessor, QwenOmniStreamProcessor
+from .qwen_omni import QwenOmniProcessor
 
 __all__ = [
     # 声学VAD
@@ -47,7 +47,6 @@ __all__ = [
     "recognize_emotion_from_text",
     # Qwen Omni（保留兼容）
     "QwenOmniProcessor",
-    "QwenOmniStreamProcessor",
     # LLM任务规划
     "LLMTaskPlanner",
     # 工具引擎

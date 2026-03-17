@@ -292,6 +292,7 @@ class VoiceDialogSystem:
 
         # 5. 检测到静音，检查是否应该结束
         elif vad_result["event"] == "silence_detected" and self._is_streaming:
+            self.asr_processor.commit()
             silence_duration = vad_result["silence_duration"]
 
             if self._silence_start_time is None:
@@ -307,16 +308,18 @@ class VoiceDialogSystem:
             if self.semantic_vad.processor.is_complete():
                 should_finalize = True
                 finalize_reason = "语义完整"
+                logger.info("语义VAD判断完整，结束语音段")
 
             # 条件2: 静音时间超过阈值且有ASR文本
             elif silence_elapsed >= self.MAX_SILENCE_WAIT_MS and self._asr_text_buffer:
                 should_finalize = True
                 finalize_reason = f"静音超时({silence_elapsed:.0f}ms)"
+                logger.info(f"静音超时且有文本，结束语音段: {silence_elapsed:.0f}ms")
 
-            # 条件3: 有足够文本且静音超过500ms（与静音超时一致）
-            elif silence_elapsed >= self.SILENCE_THRESHOLD_MS and len(self._asr_text_buffer) >= 5:
-                should_finalize = True
-                finalize_reason = "静音+文本充足"
+            # # 条件3: 有足够文本且静音超过500ms（与静音超时一致）
+            # elif silence_elapsed >= self.SILENCE_THRESHOLD_MS and len(self._asr_text_buffer) >= 5:
+            #     should_finalize = True
+            #     finalize_reason = "静音+文本充足"
 
             if should_finalize:
                 logger.info(f"结束语音段: {finalize_reason}, 文本: '{self._asr_text_buffer}'")
@@ -469,6 +472,7 @@ class VoiceDialogSystem:
 
         v3.5: LLM 处理作为后台任务运行
         """
+        logger.info("[打断] 确认有效人声，将输入交给LLM处理")
         self._interrupt_confirm_mode = False
         self._is_streaming = False
         self._tts_stopped_for_interrupt = False  # 重置TTS停止标志
@@ -527,6 +531,7 @@ class VoiceDialogSystem:
 
         v3.6: 不清空 ASR 缓冲区，保留之前的内容
         """
+        logger.info("[打断] 确认取消")
         self._interrupt_confirm_mode = False
         self._is_streaming = False
         self._tts_stopped_for_interrupt = False
@@ -615,6 +620,7 @@ class VoiceDialogSystem:
 
         v3.5: LLM 处理作为后台任务运行，不阻塞音频接收
         """
+        logger.info("结束流式处理...")
         if not self._is_streaming:
             return None
 
@@ -879,7 +885,7 @@ class VoiceDialogSystem:
             content=llm_response.final_response
         ))
 
-        logger.info(f"对话完成 - 用户: '{text}' -> 助手: '{llm_response.final_response[:50]}...'")
+        logger.info(f"对话完成 - 用户: '{text}' -> 助手: '{llm_response.final_response}'")
 
         # 结束时延追踪
         latency_tracker.end_sentence()
