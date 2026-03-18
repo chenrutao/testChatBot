@@ -259,8 +259,7 @@ class QwenASRProcessor:
                 output_modalities=[MultiModality.TEXT],
                 enable_input_audio_transcription_params=True,
                 transcription_params=transcription_params,
-                turn_detection_threshold=0.5,
-                turn_detection_silence_duration_ms=2000
+                turn_detection_silence_duration_ms=1000
             )
 
             logger.info("ASR 流式会话已启动")
