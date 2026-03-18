@@ -137,6 +137,9 @@ class VoiceDialogSystem:
         self._tts_enabled = True  # TTS 默认开启
         self._on_tts_state_change_callbacks: List[Callable] = []  # TTS 状态变化回调
 
+        # ========== 语义VAD 开关（通过配置文件控制）==========
+        self._semantic_vad_enabled = self.config.semantic_vad.get("enabled", False)  # 默认关闭
+
         # 添加状态监听
         self.dialog_state.add_listener(self._on_state_change)
 
@@ -304,8 +307,8 @@ class VoiceDialogSystem:
             should_finalize = False
             finalize_reason = ""
 
-            # 条件1: 语义VAD判断完整
-            if self.semantic_vad.processor.is_complete():
+            # 条件1: 语义VAD判断完整（仅在启用时）
+            if self._semantic_vad_enabled and self.semantic_vad.processor.is_complete():
                 should_finalize = True
                 finalize_reason = "语义完整"
                 logger.info("语义VAD判断完整，结束语音段")
@@ -394,24 +397,31 @@ class VoiceDialogSystem:
                 return "noise"
             return "pending"
 
-        # 使用语义VAD判断人声有效性
-        voice_validity = self.semantic_vad.processor.check_voice_validity(text)
+        # 使用语义VAD判断人声有效性（仅在启用时）
+        if self._semantic_vad_enabled:
+            voice_validity = self.semantic_vad.processor.check_voice_validity(text)
 
-        if voice_validity == VoiceValidity.VALID:
-            # 是有效人声，检查是否语义完整
-            if self.semantic_vad.processor.is_complete():
-                return "complete"
-            return "valid"
+            if voice_validity == VoiceValidity.VALID:
+                # 是有效人声，检查是否语义完整
+                if self.semantic_vad.processor.is_complete():
+                    return "complete"
+                return "valid"
 
-        elif voice_validity == VoiceValidity.FILLER:
-            # 只是语气助词，应该取消打断，继续播报
-            logger.info(f"[打断] 检测到非有效人声: '{text}'，取消打断，继续播报")
-            return "filler"
+            elif voice_validity == VoiceValidity.FILLER:
+                # 只是语气助词，应该取消打断，继续播报
+                logger.info(f"[打断] 检测到非有效人声: '{text}'，取消打断，继续播报")
+                return "filler"
 
-        elif voice_validity == VoiceValidity.NOISE:
-            # 噪声，取消打断
-            logger.info(f"[打断] 检测到噪声，取消打断")
-            return "noise"
+            elif voice_validity == VoiceValidity.NOISE:
+                # 噪声，取消打断
+                logger.info(f"[打断] 检测到噪声，取消打断")
+                return "noise"
+        else:
+            # 语义VAD禁用时，使用简单规则判断
+            # 有足够文本就认为是有效人声
+            if len(text) >= 2:
+                logger.info(f"[打断] 语义VAD禁用，简单判断为有效人声: '{text}'")
+                return "valid"
 
         # 检查文本内容是否像噪声/非有效人声
         # 如果文本很短且全是重复字符或语气词，可能是噪声
@@ -500,9 +510,14 @@ class VoiceDialogSystem:
             )
 
         # 获取语义VAD结果
-        semantic_result = await self.semantic_vad.stop()
-        semantic_state = semantic_result.state
-        semantic_confidence = semantic_result.confidence
+        if self._semantic_vad_enabled:
+            semantic_result = await self.semantic_vad.stop()
+            semantic_state = semantic_result.state
+            semantic_confidence = semantic_result.confidence
+        else:
+            # 语义VAD禁用时，直接设置为COMPLETE
+            semantic_state = SemanticState.COMPLETE
+            semantic_confidence = 1.0
 
         # 获取情绪识别结果
         emotion_result = await self.emotion_recognizer.finalize_sentence(recognized_text)
@@ -554,14 +569,16 @@ class VoiceDialogSystem:
 
     async def _start_streaming(self, interrupt_mode: bool = False):
         """启动流式处理"""
-        logger.info(f"启动流式处理 (打断模式: {interrupt_mode})")
+        logger.info(f"启动流式处理 (打断模式: {interrupt_mode}, 语义VAD: {self._semantic_vad_enabled})")
 
         try:
             asr_started = await self.asr_processor.start_stream(self._on_asr_result)
             if not asr_started:
                 logger.warning("ASR流启动失败，将使用模拟模式")
 
-            await self.semantic_vad.start(interrupt_mode=interrupt_mode)
+            # 仅在语义VAD启用时启动
+            if self._semantic_vad_enabled:
+                await self.semantic_vad.start(interrupt_mode=interrupt_mode)
             await self.emotion_recognizer.start()
 
             self._asr_text_buffer = ""
@@ -599,8 +616,8 @@ class VoiceDialogSystem:
         # 更新时延追踪的文本
         latency_tracker.update_text(text)
 
-        # 流式语义VAD判断
-        if text:
+        # 流式语义VAD判断（仅在启用时）
+        if text and self._semantic_vad_enabled:
             latency_tracker.mark_start("semantic_vad")
             semantic_result = await self.semantic_vad.process_text(text, is_final)
             latency_tracker.mark_end("semantic_vad", {
@@ -648,9 +665,15 @@ class VoiceDialogSystem:
             latency_tracker.update_text(recognized_text)
 
             # 2. 获取最终语义VAD结果
-            semantic_result = await self.semantic_vad.stop()
-            semantic_state = semantic_result.state
-            semantic_confidence = semantic_result.confidence
+            if self._semantic_vad_enabled:
+                semantic_result = await self.semantic_vad.stop()
+                semantic_state = semantic_result.state
+                semantic_confidence = semantic_result.confidence
+            else:
+                # 语义VAD禁用时，直接设置为COMPLETE
+                semantic_state = SemanticState.COMPLETE
+                semantic_confidence = 1.0
+                logger.info("语义VAD已禁用，使用声学VAD结果")
 
             # 3. 获取情绪识别结果
             latency_tracker.mark_start("emotion")

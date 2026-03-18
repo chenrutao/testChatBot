@@ -73,7 +73,7 @@ class Config:
             "model": "qwen3-omni-flash"
         },
         "SEMANTIC_VAD": {
-            "enabled": True,
+            "enabled": False,  # 默认关闭，关闭时仅使用声学VAD
             "model": "qwen3-omni-flash",
             "streaming": {
                 "min_text_length": 2,
