@@ -258,7 +258,8 @@ class QwenASRProcessor:
             self._conversation.update_session(
                 output_modalities=[MultiModality.TEXT],
                 enable_input_audio_transcription_params=True,
-                transcription_params=transcription_params
+                transcription_params=transcription_params,
+                turn_detection_silence_duration_ms=1000
             )
 
             logger.info("ASR 流式会话已启动")
@@ -267,8 +268,10 @@ class QwenASRProcessor:
         except Exception as e:
             logger.error(f"启动 ASR 流式会话失败: {e}")
             return False
-    
-    
+
+    def commit(self):
+        self._conversation.commit()
+
     async def start_stream(self, on_result: Optional[Callable] = None) -> bool:
         """
         开始流式识别会话
@@ -284,6 +287,9 @@ class QwenASRProcessor:
             try:
                 if self._recognition and self._callback and not self._callback._stopped:
                     self._recognition.stop()
+                if self._conversation and self._callback and not self._callback._stopped:
+                    self._conversation.end_session()
+                    self._conversation.close()
             except Exception:
                 pass
             self._is_streaming = False
@@ -357,6 +363,7 @@ class QwenASRProcessor:
             )
 
         try:
+            logger.info("停止 ASR 流式会话")
             # 停止识别
             if self._recognition and self._callback and not self._callback._stopped:
                 self._recognition.stop()
@@ -427,48 +434,3 @@ class QwenASRProcessor:
             self._callback.result_text = ""
             self._callback.partial_text = ""
 
-
-class QwenASRStreamIterator:
-    """
-    Qwen ASR 流式迭代器
-    用于异步迭代音频流并输出识别结果
-    """
-
-    def __init__(self, processor: QwenASRProcessor):
-        self.processor = processor
-        self._queue = asyncio.Queue()
-        self._running = False
-
-    async def start(self):
-        """启动迭代器"""
-        self._running = True
-        await self.processor.start_stream(self._on_result)
-
-    async def _on_result(self, text: str, is_final: bool):
-        """结果回调"""
-        await self._queue.put((text, is_final))
-
-    async def send_audio(self, audio_chunk: bytes):
-        """发送音频数据"""
-        if self._running:
-            await self.processor.process_chunk(audio_chunk)
-
-    async def __aiter__(self) -> AsyncIterator[tuple]:
-        """异步迭代"""
-        while self._running:
-            try:
-                text, is_final = await asyncio.wait_for(
-                    self._queue.get(),
-                    timeout=0.5
-                )
-                yield text, is_final
-
-                if is_final:
-                    break
-            except asyncio.TimeoutError:
-                continue
-
-    async def stop(self) -> ASRResult:
-        """停止迭代器"""
-        self._running = False
-        return await self.processor.stop_stream()

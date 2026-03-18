@@ -141,13 +141,6 @@ class LLMTaskPlanner:
         EmotionType.NEUTRAL: "用户情绪平和，正常交流即可。",
     }
 
-    def _get_emotion_response(self, emotion: EmotionType, intensity: float) -> str:
-        """根据情绪和强度获取回应前缀"""
-        import random
-        level = "high" if intensity > 0.7 else "medium" if intensity > 0.4 else "low"
-        responses = self.EMOTION_RESPONSES.get(emotion, {}).get(level, [""])
-        return random.choice(responses)
-
     def _get_llm_emotion(self, user_emotion: EmotionType, intensity: float) -> EmotionType:
         """
         根据用户情绪和强度确定大模型的情绪
@@ -303,12 +296,6 @@ class LLMTaskPlanner:
             # 构建响应
             response_text = message.content or ""
 
-            # 情绪适配 - 使用新的情绪回应方式
-            if self.config.get("emotion_context", {}).get("enabled", True):
-                emotion_prefix = self._get_emotion_response(llm_input.emotion, llm_input.emotion_intensity)
-                if emotion_prefix and not response_text.startswith(emotion_prefix):
-                    response_text = emotion_prefix + " " + response_text
-
             # 大模型情绪：根据用户情绪和强度确定
             llm_emotion = self._get_llm_emotion(llm_input.emotion, llm_input.emotion_intensity)
 
@@ -387,7 +374,7 @@ class LLMTaskPlanner:
             # 流式调用LLM
             import time
             call_time = time.time() * 1000
-            logger.info(f"[LLM] 调用模型前, 时间: {call_time:.0f}ms, 输入文本: '{llm_input.text[:50]}...'")
+            logger.info(f"[LLM] 调用模型前, 时间: {call_time:.0f}ms, 输入文本: '{llm_input.text}'")
 
             stream = await self.client.chat.completions.create(
                 model=self.config.get("model", "qwen-plus"),
@@ -463,19 +450,11 @@ class LLMTaskPlanner:
                         arguments=arguments
                     ))
 
-            # 情绪适配（流式模式下不添加前缀，因为已经开始输出了）
-            # 这里我们在最终响应中添加前缀用于TTS
-            final_text = response_text
-            if self.config.get("emotion_context", {}).get("enabled", True):
-                emotion_prefix = self._get_emotion_response(llm_input.emotion, llm_input.emotion_intensity)
-                if emotion_prefix and not response_text.startswith(emotion_prefix):
-                    final_text = emotion_prefix + " " + response_text
-
             # 大模型情绪：根据用户情绪和强度确定
             llm_emotion = self._get_llm_emotion(llm_input.emotion, llm_input.emotion_intensity)
 
             return LLMResponse(
-                text=final_text,
+                text=response_text,
                 tool_calls=tool_calls,
                 emotion_adapted=True,
                 llm_emotion=llm_emotion

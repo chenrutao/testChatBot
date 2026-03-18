@@ -24,7 +24,7 @@ QWEN_OMNI:
 
 # 语义VAD配置 (流式判断)
 SEMANTIC_VAD:
-  enabled: true
+  enabled: false
   model: "qwen-flash"
   threshold: 0.7
   # 流式判断配置
