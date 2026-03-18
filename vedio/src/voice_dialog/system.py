@@ -295,7 +295,6 @@ class VoiceDialogSystem:
 
         # 5. 检测到静音，检查是否应该结束
         elif vad_result["event"] == "silence_detected" and self._is_streaming:
-            self.asr_processor.commit()
             silence_duration = vad_result["silence_duration"]
 
             if self._silence_start_time is None:
