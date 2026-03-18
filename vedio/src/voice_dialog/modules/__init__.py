@@ -21,7 +21,7 @@
    - v3.2.2: StreamingTTSProcessor 支持LLM流式输出实时转语音
 """
 from .acoustic_vad import AcousticVAD, StreamingVAD
-from .qwen_asr import QwenASRProcessor, QwenASRStreamIterator
+from .qwen_asr import QwenASRProcessor
 from .semantic_vad import SemanticVADProcessor, StreamingSemanticVAD
 from .emotion import EmotionRecognizer, ParallelEmotionRecognizer, recognize_emotion_from_text
 from .llm_planner import LLMTaskPlanner
@@ -29,7 +29,7 @@ from .tools import ToolEngine, MCPClient, SKILLSEngine
 from .tts import TTSEngine, StreamingTTS, StreamingTTSProcessor
 from .user_profile import UserIdentityRecognizer, UserType, UserProfile
 # 保留旧模块以兼容
-from .qwen_omni import QwenOmniProcessor, QwenOmniStreamProcessor
+from .qwen_omni import QwenOmniProcessor
 
 __all__ = [
     # 声学VAD
@@ -37,7 +37,6 @@ __all__ = [
     "StreamingVAD",
     # Qwen ASR 17B（流式）★新增
     "QwenASRProcessor",
-    "QwenASRStreamIterator",
     # 语义VAD（流式判断）★新增
     "SemanticVADProcessor",
     "StreamingSemanticVAD",
@@ -47,7 +46,6 @@ __all__ = [
     "recognize_emotion_from_text",
     # Qwen Omni（保留兼容）
     "QwenOmniProcessor",
-    "QwenOmniStreamProcessor",
     # LLM任务规划
     "LLMTaskPlanner",
     # 工具引擎
